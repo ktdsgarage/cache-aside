@@ -5,15 +5,13 @@ global:
 image:
   registry: mcr.microsoft.com
   repository: mssql/server
-  tag: "2022-latest"
-  pullPolicy: IfNotPresent
-
-client:
-  image:
+  tag: 2022-latest
+  # tools container도 함께 설정
+  tools:
     registry: mcr.microsoft.com
     repository: mssql-tools
     tag: latest
-    pullPolicy: IfNotPresent
+  pullPolicy: IfNotPresent
 
 edition: Developer
 
@@ -22,14 +20,16 @@ auth:
   createDatabase: true
   database: "telecomdb"
   databaseCollate: SQL_Latin1_General_CP1_CI_AS
+  username: "sa"  # SQL Server의 기본 관리자 계정
   createLogin: true
-  username: "sa"  # 명시적으로 sa 지정
 
 primary:
   name: primary
   command:
-    - "/bin/bash"
-    - "/tmp/entrypoint-scripts/entrypoint.sh"
+    - /bin/bash
+    - -c
+    - |
+      /opt/mssql/bin/sqlservr
   persistence:
     enabled: true
     storageClass: "managed"
@@ -54,19 +54,25 @@ primary:
     type: ClusterIP
     ports:
       mssql: 1433
+  # SQL Server 초기화를 위한 init container 추가
   initContainers:
-    - name: init-tools
-      image: mcr.microsoft.com/mssql-tools
-      command: ['sh', '-c', 'cp -a /opt/mssql-tools/. /tools/']
-      volumeMounts:
-        - name: tools
-          mountPath: /tools
-  extraVolumes:
-    - name: tools
-      emptyDir: {}
-  extraVolumeMounts:
-    - name: tools
-      mountPath: /opt/mssql-tools
+    - name: init-sqlserver
+      image: "mcr.microsoft.com/mssql-tools"
+      command:
+        - /bin/bash
+        - -c
+        - |
+          until /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "${MSSQL_SA_PASSWORD}" -Q "SELECT 1"; do
+            echo "Waiting for SQL Server to start..."
+            sleep 2
+          done
+          echo "SQL Server is ready"
+      env:
+        - name: MSSQL_SA_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ${teamid}-mssql
+              key: sa-password
 
 secondary:
   name: secondary
@@ -86,10 +92,10 @@ secondary:
       cpu: 500m
   podSecurityContext:
     enabled: true
-    fsGroup: 10001  # SQL Server 권장 fsGroup
+    fsGroup: 10001
   containerSecurityContext:
     enabled: true
-    runAsUser: 10001  # SQL Server 권장 user ID
+    runAsUser: 10001
     runAsNonRoot: true
   service:
     type: ClusterIP
@@ -106,6 +112,31 @@ volumePermissions:
 serviceAccount:
   create: true
   name: mssql-sa
+  annotations: {}
+  automountServiceAccountToken: true
 
 rbac:
   create: true
+  rules: []
+
+# SQL Server 환경 변수 설정
+extraEnvVars:
+  - name: ACCEPT_EULA
+    value: "Y"
+  - name: MSSQL_PID
+    value: "Developer"
+  - name: MSSQL_AGENT_ENABLED
+    value: "true"
+
+# 초기화 스크립트 설정
+initdbScripts:
+  init.sql: |
+    USE [master]
+    GO
+    IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = '$(MSSQL_DATABASE)')
+    BEGIN
+      CREATE DATABASE [$(MSSQL_DATABASE)]
+      ALTER DATABASE [$(MSSQL_DATABASE)] SET COMPATIBILITY_LEVEL = 150
+      ALTER DATABASE [$(MSSQL_DATABASE)] COLLATE $(MSSQL_DATABASE_COLLATE)
+    END
+    GO
