@@ -1,0 +1,86 @@
+# mssql-values.yaml
+global:
+  storageClass: "managed"
+
+image:
+  registry: mcr.microsoft.com
+  repository: mssql/server
+  tag: 2022-latest
+
+edition: Developer
+
+auth:
+  rootPassword: ${sqlserver_password}
+  createDatabase: true
+  database: "telecomdb"
+  databaseCollate: SQL_Latin1_General_CP1_CI_AS
+  createLogin: true
+
+primary:
+  name: primary
+  persistence:
+    enabled: true
+    storageClass: "managed"
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 500m
+    limits:
+      memory: 1Gi
+      cpu: 500m
+  podSecurityContext:
+    enabled: true
+    fsGroup: 10001  # SQL Server 권장 fsGroup
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 10001  # SQL Server 권장 user ID
+    runAsNonRoot: true
+  service:
+    type: ClusterIP
+    ports:
+      mssql: 1433
+
+secondary:
+  name: secondary
+  replicaCount: 1
+  persistence:
+    enabled: true
+    storageClass: "managed"
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 500m
+    limits:
+      memory: 1Gi
+      cpu: 500m
+  podSecurityContext:
+    enabled: true
+    fsGroup: 10001  # SQL Server 권장 fsGroup
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 10001  # SQL Server 권장 user ID
+    runAsNonRoot: true
+  service:
+    type: ClusterIP
+
+volumePermissions:
+  enabled: true
+  image:
+    registry: docker.io
+    repository: bitnami/bitnami-shell
+    tag: 11-debian-11-r32
+  securityContext:
+    runAsUser: 0  # root로 실행하여 권한 설정
+
+serviceAccount:
+  create: true
+  name: mssql-sa
+
+rbac:
+  create: true
