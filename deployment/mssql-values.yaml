@@ -68,7 +68,31 @@ primary:
     - name: tools
       mountPath: /opt/mssql-tools
 
-# secondary 설정은 동일...
+secondary:
+  name: secondary
+  replicaCount: 1
+  persistence:
+    enabled: true
+    storageClass: "managed"
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 500m
+    limits:
+      memory: 1Gi
+      cpu: 500m
+  podSecurityContext:
+    enabled: true
+    fsGroup: 10001  # SQL Server 권장 fsGroup
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 10001  # SQL Server 권장 user ID
+    runAsNonRoot: true
+  service:
+    type: ClusterIP
 
 volumePermissions:
   enabled: true
