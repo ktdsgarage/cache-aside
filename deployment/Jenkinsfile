@@ -4,7 +4,7 @@ properties([
     parameters([
         string(
             name: 'TEAMID',
-            defaultValue: 'team1',
+            defaultValue: 'ondal',
             description: 'Team ID for namespace and resource naming (lowercase letters and numbers only)'
         )
     ])
