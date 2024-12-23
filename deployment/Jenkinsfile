@@ -1,0 +1,266 @@
+def PIPELINE_ID = "cqrs-${env.BUILD_NUMBER}"
+
+properties([
+    parameters([
+        string(
+            name: 'TEAMID',
+            defaultValue: 'team1',
+            description: 'Team ID for namespace and resource naming (lowercase letters and numbers only)'
+        )
+    ])
+])
+
+def getImageTag() {
+    def dateFormat = new java.text.SimpleDateFormat('yyyyMMddHHmmss')
+    def currentDate = new Date()
+    return dateFormat.format(currentDate)
+}
+
+def checkError(message) {
+    if (currentBuild.result == "FAILURE") {
+        error "Failed: ${message}"
+    }
+}
+
+podTemplate(
+    label: "${PIPELINE_ID}",
+    serviceAccount: 'jenkins',
+    containers: [
+        // 기존 컨테이너들...
+        containerTemplate(
+            name: 'azure-cli',
+            image: 'hiondal/azure-kubectl:latest',
+            command: 'cat',
+            ttyEnabled: true,
+            envVars: [
+                envVar(key: 'HOME', value: '/home/jenkins'),
+                envVar(key: 'KUBECONFIG', value: '/home/jenkins/.kube/config')
+            ]
+        ),
+        containerTemplate(
+            name: 'helm',
+            image: 'alpine/helm:3.12.0',
+            ttyEnabled: true,
+            envVars: [
+                envVar(key: 'KUBECONFIG', value: '/home/jenkins/.kube/config')
+            ]
+        )
+    ],
+    volumes: [
+        emptyDirVolume(mountPath: '/home/gradle/.gradle', memory: false),
+        emptyDirVolume(mountPath: '/home/jenkins', memory: false)
+    ]
+) {
+    node(PIPELINE_ID) {
+        def props
+        def teamid = params.TEAMID
+        def namespace
+        def imageReg
+        def imageOrg
+        def imageTag = getImageTag()
+        def imageCredential
+        def manifest = "deploy.yaml"
+
+        stage("Get Source") {
+            // teamid 검증
+            if (!teamid?.trim()) {
+                error "TEAMID parameter is required"
+            }
+            if (!(teamid ==~ /^[a-z0-9]+$/)) {
+                error "TEAMID must contain only lowercase letters and numbers"
+            }
+
+            checkout scm
+            props = readProperties file: "deployment/deploy_env_vars"
+
+            namespace = "${teamid}-ns"
+            imageReg = "${teamid}cr.azurecr.io"
+            imageOrg = props["image_org"] ?: "telecom"
+            imageCredential = props["image_credential"] ?: error("image_credential not found")
+        }
+
+        try {
+            stage("Setup AKS and Create Namespace") {
+                container('azure-cli') {
+                    withCredentials([azureServicePrincipal('azure-credentials')]) {
+                        sh """
+                            az login --service-principal -u \$AZURE_CLIENT_ID -p \$AZURE_CLIENT_SECRET -t \$AZURE_TENANT_ID
+                            az aks get-credentials --resource-group ${props.resource_group} --name ${teamid}-aks --overwrite-existing
+                            kubectl create namespace ${namespace} --dry-run=client -o yaml | kubectl apply -f -
+                        """
+                    }
+                }
+                checkError("AKS Setup and Namespace Creation Failed")
+            }
+
+            stage('Setup Helm Repositories') {
+                container('helm') {
+                    sh """
+                        helm repo add bitnami https://charts.bitnami.com/bitnami
+                        helm repo update
+                    """
+                }
+                checkError("Helm Repository Setup Failed")
+            }
+
+            stage('Deploy Databases with Helm') {
+                container('helm') {
+                    // MS SQL Server primary-secondary 배포
+                    sh """
+                        helm upgrade --install ${teamid}-mssql bitnami/mssql \
+                            --namespace ${namespace} \
+                            --set auth.username=sa \
+                            --set auth.password=${props.sqlserver_password} \
+                            --set architecture=replication \
+                            --set global.storageClass=managed \
+                            --set primary.persistence.enabled=true \
+                            --set primary.persistence.size=10Gi \
+                            --set primary.persistence.storageClass=managed \
+                            --set primary.persistence.accessModes[0]=ReadWriteOnce \
+                            --set primary.persistence.annotations."volume\\.beta\\.kubernetes\\.io/storage-class"=managed \
+                            --set secondary.replicaCount=1 \
+                            --set secondary.persistence.enabled=true \
+                            --set secondary.persistence.size=10Gi \
+                            --set secondary.persistence.storageClass=managed \
+                            --set secondary.persistence.accessModes[0]=ReadWriteOnce \
+                            --set secondary.persistence.annotations."volume\\.beta\\.kubernetes\\.io/storage-class"=managed \
+                            --set service.type=ClusterIP \
+                            --set replication.enabled=true \
+                            --set replication.synchronousCommit=on \
+                            --set replication.numSynchronousReplicas=1 \
+                            --set volumePermissions.enabled=true \
+                            --set securityContext.enabled=true \
+                            --set securityContext.fsGroup=1001 \
+                            --wait \
+                            --timeout 10m
+                    """
+
+                    // Redis 배포
+                    sh """
+                        helm upgrade --install ${teamid}-redis bitnami/redis \
+                            --namespace ${namespace} \
+                            --set auth.password=${props.redis_password} \
+                            --set architecture=standalone \
+                            --set global.storageClass=managed \
+                            --set master.persistence.enabled=true \
+                            --set master.persistence.size=10Gi \
+                            --set master.persistence.storageClass=managed \
+                            --set master.persistence.accessModes[0]=ReadWriteOnce \
+                            --set master.persistence.annotations."volume\\.beta\\.kubernetes\\.io/storage-class"=managed \
+                            --set volumePermissions.enabled=true \
+                            --set securityContext.enabled=true \
+                            --set securityContext.fsGroup=1001 \
+                            --wait \
+                            --timeout 10m
+                    """
+
+                    // PVC 상태 확인
+                    sh """
+                        echo "Waiting for PVCs to be bound..."
+                        kubectl wait --for=condition=bound pvc --all -n ${namespace} --timeout=5m || true
+
+                        echo "PVC Status:"
+                        kubectl get pvc -n ${namespace}
+
+                        echo "PV Status:"
+                        kubectl get pv -l namespace=${namespace}
+                    """
+                }
+                checkError("Database Deployment Failed")
+            }
+
+            stage('Build Applications') {
+                container('gradle') {
+                    sh """
+                        chmod +x gradlew
+                        ./gradlew clean build -x test
+                    """
+                }
+                checkError("Application Build Failed")
+            }
+
+            stage('Build Container Images') {
+                container('podman') {
+                    def imagePath = "${imageReg}/${imageOrg}/cache-aside"
+                    sh """
+                        podman build -f deployment/Dockerfile \
+                            -t ${imagePath}:${imageTag} \
+                            -t ${imagePath}:latest .
+                    """
+                }
+                checkError("Container Image Build Failed")
+            }
+
+            stage('Push Container Images') {
+                container('podman') {
+                    def imagePath = "${imageReg}/${imageOrg}/cache-aside"
+                    withCredentials([usernamePassword(
+                        credentialsId: "${imageCredential}",
+                        usernameVariable: 'USERNAME',
+                        passwordVariable: 'PASSWORD'
+                    )]) {
+                        sh """
+                            podman login ${imageReg} --username \$USERNAME --password \$PASSWORD
+                            podman push ${imagePath}:${imageTag}
+                            podman push ${imagePath}:latest
+                        """
+                    }
+                }
+                checkError("Container Image Push Failed")
+            }
+
+            stage('Generate Deployment YAML') {
+                container('envsubst') {
+                    sh """
+                        export teamid=${teamid}
+                        export namespace=${namespace}
+                        export image_tag=${imageTag}
+                        export image_path=${imageReg}/${imageOrg}/cache-aside:${imageTag}
+
+                        set -a
+                        source deployment/deploy_env_vars
+                        set +a
+
+                        envsubst < deployment/${manifest}.template > deployment/${manifest}
+                    """
+                }
+                checkError("Deployment YAML Generation Failed")
+            }
+
+            stage('Deploy Application') {
+                container('azure-cli') {
+                    sh """
+                        kubectl apply -f deployment/${manifest}
+                        echo "Waiting for application pods to be ready..."
+                        kubectl wait --for=condition=ready pod -l "app=cache-aside,teamid=${teamid}" -n ${namespace} --timeout=300s || true
+                    """
+                }
+                checkError("Application Deployment Failed")
+            }
+
+            stage('Verify Deployment') {
+                container('azure-cli') {
+                    sh """
+                        echo "Verifying service endpoints..."
+                        CACHE_ASIDE_IP=\$(kubectl get svc ${teamid}-cache-aside -n ${namespace} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                        echo "Cache Aside Service IP: \$CACHE_ASIDE_IP"
+
+                        if [ -z "\$CACHE_ASIDE_IP" ]; then
+                            echo "Error: Service IP not available"
+                            exit 1
+                        fi
+                    """
+                }
+                checkError("Deployment Verification Failed")
+            }
+
+            currentBuild.result = 'SUCCESS'
+            echo "**** FINISH ALL STAGES : SUCCESS"
+
+        } catch(e) {
+            currentBuild.result = "FAILED"
+            echo "**** ERROR: ${e.getMessage()}"
+            throw e
+        }
+    }
+}
