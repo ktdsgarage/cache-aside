@@ -112,7 +112,7 @@ podTemplate(
                         helm upgrade --install ${teamid}-mssql elm/mssql \
                             --namespace ${namespace} \
                             --set auth.rootPassword=${props.sqlserver_password} \
-                            --values mssql-values.yaml \
+                            --values ./deployment/mssql-values.yaml \
                             --wait \
                             --timeout 10m
                     """
