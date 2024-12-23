@@ -98,6 +98,7 @@ podTemplate(
                 container('helm') {
                     sh """
                         helm repo add bitnami https://charts.bitnami.com/bitnami
+                        helm repo add mssql-server https://microsoft.github.io/mssql-release/
                         helm repo update
                     """
                 }
@@ -108,35 +109,34 @@ podTemplate(
                 container('helm') {
                     // MS SQL Server primary-secondary 배포
                     sh """
-                        helm upgrade --install ${teamid}-mssql bitnami/mssql \
+                        helm upgrade --install ${teamid}-mssql mssql-server/mssql-server \
                             --namespace ${namespace} \
-                            --set auth.username=sa \
-                            --set auth.password=${props.sqlserver_password} \
-                            --set architecture=replication \
-                            --set global.storageClass=managed \
-                            --set primary.persistence.enabled=true \
-                            --set primary.persistence.size=10Gi \
-                            --set primary.persistence.storageClass=managed \
-                            --set primary.persistence.accessModes[0]=ReadWriteOnce \
-                            --set primary.persistence.annotations."volume\\.beta\\.kubernetes\\.io/storage-class"=managed \
-                            --set secondary.replicaCount=1 \
-                            --set secondary.persistence.enabled=true \
-                            --set secondary.persistence.size=10Gi \
-                            --set secondary.persistence.storageClass=managed \
-                            --set secondary.persistence.accessModes[0]=ReadWriteOnce \
-                            --set secondary.persistence.annotations."volume\\.beta\\.kubernetes\\.io/storage-class"=managed \
+                            --set acceptEula.value=Y \
+                            --set replicas=2 \
+                            --set sa_password=${props.sqlserver_password} \
+                            --set edition=Enterprise \
+                            --set storage.storageClass=managed \
+                            --set storage.size=10Gi \
+                            --set hadr.enabled=true \
+                            --set hadr.pathForLogs=/var/opt/mssql/log \
+                            --set hadr.pathForData=/var/opt/mssql/data \
+                            --set hadr.automatedBackup.enabled=true \
+                            --set hadr.automatedBackup.retentionDays=7 \
+                            --set hadr.forceSynchronous=true \
                             --set service.type=ClusterIP \
-                            --set replication.enabled=true \
-                            --set replication.synchronousCommit=on \
-                            --set replication.numSynchronousReplicas=1 \
-                            --set volumePermissions.enabled=true \
-                            --set securityContext.enabled=true \
-                            --set securityContext.fsGroup=1001 \
+                            --set securityContext.runAsUser=10001 \
+                            --set securityContext.runAsGroup=10001 \
+                            --set securityContext.fsGroup=10001 \
                             --wait \
                             --timeout 10m
+
+                        # AG 상태 확인
+                        kubectl exec \${teamid}-mssql-0 -n ${namespace} -- /opt/mssql-tools/bin/sqlcmd \
+                            -S localhost -U sa -P ${props.sqlserver_password} \
+                            -Q "SELECT replica_server_name, role_desc, connected_state_desc FROM sys.dm_hadr_availability_replica_states"
                     """
 
-                    // Redis 배포
+                    // Redis 배포 (변경 없음)
                     sh """
                         helm upgrade --install ${teamid}-redis bitnami/redis \
                             --namespace ${namespace} \
@@ -155,7 +155,7 @@ podTemplate(
                             --timeout 10m
                     """
 
-                    // PVC 상태 확인
+                    // PVC 상태 확인 (변경 없음)
                     sh """
                         echo "Waiting for PVCs to be bound..."
                         kubectl wait --for=condition=bound pvc --all -n ${namespace} --timeout=5m || true
