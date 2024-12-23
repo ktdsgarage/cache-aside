@@ -5,7 +5,15 @@ global:
 image:
   registry: mcr.microsoft.com
   repository: mssql/server
-  tag: 2022-latest
+  tag: "2022-latest"
+  pullPolicy: IfNotPresent
+
+client:
+  image:
+    registry: mcr.microsoft.com
+    repository: mssql-tools
+    tag: latest
+    pullPolicy: IfNotPresent
 
 edition: Developer
 
@@ -15,9 +23,13 @@ auth:
   database: "telecomdb"
   databaseCollate: SQL_Latin1_General_CP1_CI_AS
   createLogin: true
+  username: "sa"  # 명시적으로 sa 지정
 
 primary:
   name: primary
+  command:
+    - "/bin/bash"
+    - "/tmp/entrypoint-scripts/entrypoint.sh"
   persistence:
     enabled: true
     storageClass: "managed"
@@ -33,41 +45,30 @@ primary:
       cpu: 500m
   podSecurityContext:
     enabled: true
-    fsGroup: 10001  # SQL Server 권장 fsGroup
+    fsGroup: 10001
   containerSecurityContext:
     enabled: true
-    runAsUser: 10001  # SQL Server 권장 user ID
+    runAsUser: 10001
     runAsNonRoot: true
   service:
     type: ClusterIP
     ports:
       mssql: 1433
+  initContainers:
+    - name: init-tools
+      image: mcr.microsoft.com/mssql-tools
+      command: ['sh', '-c', 'cp -a /opt/mssql-tools/. /tools/']
+      volumeMounts:
+        - name: tools
+          mountPath: /tools
+  extraVolumes:
+    - name: tools
+      emptyDir: {}
+  extraVolumeMounts:
+    - name: tools
+      mountPath: /opt/mssql-tools
 
-secondary:
-  name: secondary
-  replicaCount: 1
-  persistence:
-    enabled: true
-    storageClass: "managed"
-    size: 10Gi
-    accessModes:
-      - ReadWriteOnce
-  resources:
-    requests:
-      memory: 512Mi
-      cpu: 500m
-    limits:
-      memory: 1Gi
-      cpu: 500m
-  podSecurityContext:
-    enabled: true
-    fsGroup: 10001  # SQL Server 권장 fsGroup
-  containerSecurityContext:
-    enabled: true
-    runAsUser: 10001  # SQL Server 권장 user ID
-    runAsNonRoot: true
-  service:
-    type: ClusterIP
+# secondary 설정은 동일...
 
 volumePermissions:
   enabled: true
@@ -76,7 +77,7 @@ volumePermissions:
     repository: bitnami/bitnami-shell
     tag: 11-debian-11-r32
   securityContext:
-    runAsUser: 0  # root로 실행하여 권한 설정
+    runAsUser: 0
 
 serviceAccount:
   create: true
