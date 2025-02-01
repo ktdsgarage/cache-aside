@@ -1,5 +1,7 @@
 #!/bin/bash
 
+SHARED_PREFIX="dg0100"  #공유자원 Prefix: 실습 시 'tiu-dgga' 변경 필요
+
 # ===========================================
 # Cache-aside Pattern 실습환경 정리 스크립트
 # ===========================================
@@ -14,7 +16,7 @@ print_usage() {
     Cache-aside 패턴 실습을 위해 생성한 모든 Azure 리소스를 삭제합니다.
 
 예제:
-    $0 gappa     # gappa-cache-aside로 시작하는 모든 리소스 삭제
+    $0 dg0100
 EOF
 }
 
@@ -23,25 +25,6 @@ log() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[$timestamp] $1"
 }
-
-# userid 파라미터 체크
-if [ $# -ne 1 ]; then
-    print_usage
-    exit 1
-fi
-
-# userid 유효성 검사
-if [[ ! $1 =~ ^[a-z0-9]+$ ]]; then
-    echo "Error: userid는 영문 소문자와 숫자만 사용할 수 있습니다."
-    exit 1
-fi
-
-# 환경 변수 설정
-NAME="${1}-cache-aside"
-RESOURCE_GROUP="tiu-dgga-rg"
-AKS_NAME="${1}-aks"
-REDIS_NAMESPACE="redis"
-
 
 # 리소스 삭제 전 확인
 confirm() {
@@ -69,6 +52,7 @@ cleanup_redis_k8s() {
     kubectl delete deployment $NAME-redis -n $REDIS_NAMESPACE 2>/dev/null || true
     kubectl delete configmap redis-config -n $REDIS_NAMESPACE 2>/dev/null || true
     kubectl delete secret redis-secret -n $REDIS_NAMESPACE 2>/dev/null || true
+    kubectl delete namespace $REDIS_NAMESPACE 2>/dev/null || true
 
     log "Redis 리소스 삭제 완료"
 }
@@ -162,12 +146,30 @@ main() {
     cleanup_webapp
     cleanup_private_dns
 
-    log "모든 리소스가 정리되었습니다."
+    log "모든 리소스가 정리 되었습니다."
 
     # 남은 리소스 확인
     log "=== 남은 리소스 확인 ==="
     az resource list --resource-group $RESOURCE_GROUP --output table | grep $NAME || echo "남은 리소스 없음"
 }
+
+# userid 파라미터 체크
+if [ $# -ne 1 ]; then
+    print_usage
+    exit 1
+fi
+
+# userid 유효성 검사
+if [[ ! $1 =~ ^[a-z0-9]+$ ]]; then
+    echo "Error: userid는 영문 소문자와 숫자만 사용할 수 있습니다."
+    exit 1
+fi
+
+# 환경 변수 설정
+NAME="${1}-cache-aside"
+RESOURCE_GROUP="${SHARED_PREFIX}-rg"
+AKS_NAME="${1}-aks"
+REDIS_NAMESPACE="${1}-redis"
 
 # 스크립트 시작
 main
