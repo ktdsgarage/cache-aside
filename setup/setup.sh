@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SHARED_PREFIX="dg0100"  #공유자원 Prefix: 실습 시 'tiu-dgga' 변경 필요
+RESOURCE_GROUP="ictcoe-edu" #az group list -o table
 
 # ===========================================
 # Cache-aside Pattern 실습환경 구성 스크립트 (AKS with Redis Container)
@@ -350,12 +350,11 @@ echo "=== 1. 환경 변수 설정 ==="
 USERID="${1}"
 NAME="${USERID}-cache-aside"
 
-RESOURCE_GROUP="${SHARED_PREFIX}-rg"
 LOCATION="koreacentral"
 
-VNET_NAME="${SHARED_PREFIX}-vnet"
-SUBNET_SQL="${SHARED_PREFIX}-psql-snet"
-SUBNET_APP="${SHARED_PREFIX}-pri-snet"
+VNET_NAME="ictcoe-vm-vnet"  # az network vnet list -o table
+SUBNET_SQL="${VNET_NAME}-psql-snet" # az network vnet subnet list --vnet-name {vnet} -o table
+SUBNET_APP="${VNET_NAME}-pri-snet"
 
 DNS_ZONE_SQL="privatelink.database.windows.net"
 
