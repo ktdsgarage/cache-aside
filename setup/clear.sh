@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SHARED_PREFIX="dg0100"  #공유자원 Prefix: 실습 시 'tiu-dgga' 변경 필요
+RESOURCE_GROUP="ictcoe-edu" #az group list -o table
 
 # ===========================================
 # Cache-aside Pattern 실습환경 정리 스크립트
@@ -167,7 +167,6 @@ fi
 
 # 환경 변수 설정
 NAME="${1}-cache-aside"
-RESOURCE_GROUP="${SHARED_PREFIX}-rg"
 AKS_NAME="${1}-aks"
 REDIS_NAMESPACE="${1}-redis"
 
